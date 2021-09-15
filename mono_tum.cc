@@ -20,6 +20,7 @@
 
 #include <string.h>
 #include <math.h>
+
 #include <iostream>
 #include <algorithm>
 #include <fstream>
@@ -28,6 +29,7 @@
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
+
 #include "/usr/local/include/ctello.h"
 #include "MapDrawer.h"
 
@@ -105,8 +107,10 @@ cv::Mat rot2euler(const cv::Mat & rotationMatrix)
 }
 
 
+
 //Written by Erel Afoota for locating a path exiting a room as a group project
 //Group members: David Doner, Elad Hirshel, Erel Afoota
+
 
 // baseX / baseZ - x / z value of some point, originX / originZ - x / z value for the origin of all slice 
 //Returns the angle of median of desired slice and average distance of points in desired slice to origin and the xz coordinates of the median point in that slice
@@ -118,6 +122,7 @@ void find_route(double baseX, double baseZ, double originX, double originZ, doub
     double sliceSumOfDistances[NUMBER_OF_SLICES]; //Holds the sum of associated points distances
     for(int i = 0; i < NUMBER_OF_SLICES; i++)
     {
+
     	sliceSumOfDistances[i] = 0.0;
     }
     int numberOfPoints[NUMBER_OF_SLICES]; //Holds the number of associated points
@@ -127,6 +132,7 @@ void find_route(double baseX, double baseZ, double originX, double originZ, doub
         numberOfPoints[i] = 0;
         //cout << "Slice: " << i << " = " << numberOfPoints[i] << endl;
     }
+
     // File pointer
     fstream fin;
   
@@ -175,6 +181,7 @@ void find_route(double baseX, double baseZ, double originX, double originZ, doub
 			//cout << "angle is " << angle << endl;			
 			//Determine the correct slices for the point
 			lowerSlice = (int)(angle / sliceSpacing);
+
 			if((lowerSlice * sliceSpacing) >= (sliceSpacing / 2.0))
 			{
 				higherSlice = lowerSlice + 1;
@@ -189,6 +196,7 @@ void find_route(double baseX, double baseZ, double originX, double originZ, doub
 			}
 			
 			//Update slice's arrays
+
 			numberOfPoints[lowerSlice] = numberOfPoints[lowerSlice] + 1;
 			numberOfPoints[higherSlice] = numberOfPoints[higherSlice] + 1;
 			sliceSumOfDistances[lowerSlice] = sliceSumOfDistances[lowerSlice] + normal;
@@ -347,6 +355,7 @@ void saveMap(ORB_SLAM2::System& SLAM){
     std::vector<ORB_SLAM2::MapPoint*> mapPoints = SLAM.GetMap()->GetAllMapPoints();
     std::ofstream pointData;
     pointData.open(MAP_FILE_NAME);
+
     for(auto p : mapPoints) {
         if (p != NULL)
         {
@@ -362,16 +371,19 @@ void takeImage() // constantly saves the image from the camera
 {
     // turns on video stream and makes the drone fly
     tello.SendCommand("streamon");
+
     while (!(tello.ReceiveResponse())) { sleep(0.2);}
     
     VideoCapture capture{TELLO_STREAM_URL, CAP_FFMPEG};
     while(!finished)
+
     {
     	capture >> im;
     	/*if(im.empty())
     	{
     		cout << "image is empty" << endl;
     	} */
+
     	sleep(0.05);
     }
 }
@@ -477,6 +489,7 @@ void goToDoor(double* Vars, double originX, double originZ) // rotate to face do
     tello.SendCommand("land");
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
     finished = true;
+
 }
 
 int main(int argc, char **argv)
