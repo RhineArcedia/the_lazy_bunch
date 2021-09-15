@@ -43,7 +43,7 @@ using cv::VideoCapture;
 #define MAP_FILE_NAME "map.csv" //Use a path or put the file at the dame directory as the program
 #define NUMBER_OF_SLICES 300 //Determains the number of slices, *do not use a high number*
 #define MIN_POINT_TO_CONSIDER_SLICE 10 //The minimum amount of points in a slice to consider it as viable
-#define SLICE_QUALITY_TEST 0.7 //Slices that are probably good
+#define SLICE_QUALITY_TEST 0.9 //Slices that are probably good
 #define SLICES_LIMIT 7 //Limits the number of good slices
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
@@ -79,8 +79,6 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         numberOfPoints[i] = 0;
         //cout << "Slice: " << i << " = " << numberOfPoints[i] << endl;
     }
-    baseX = baseX - originX;
-    baseY = baseY - originY;
     // File pointer
     fstream fin;
   
@@ -89,6 +87,7 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     
     //Calculate normal for base line
     double baseNorm = sqrt(pow(baseX, 2.0) + pow(baseY, 2.0));
+    cout << "The baseNorm is " << baseNorm << endl;
     
     //Some variables
     string line, word, temp;
@@ -171,11 +170,13 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     //First higher slices
     higherSlice = (int)pointer[0];
     lowerSlice = (int)pointer[0];
+    bool over = false, below = false;
     while(numberOfPoints[higherSlice + 1] > 0 && (sliceSumOfDistances[higherSlice + 1] / numberOfPoints[higherSlice + 1]) >= SLICE_QUALITY_TEST * pointer[1])
     {
     	higherSlice++;
     	if (higherSlice >= NUMBER_OF_SLICES)
     		higherSlice = 0;
+    		over = true;
     }
     
     //Now lowest slice
@@ -183,11 +184,17 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     {
     	lowerSlice--;
     	if (lowerSlice < 0)
-    		lowerSlice = NUMBER_OF_SLICES;
+    		lowerSlice = NUMBER_OF_SLICES - 1;
+    		below = true;
     }
+    
+    if(over) { higherSlice = higherSlice + NUMBER_OF_SLICES; }
+    if(below) { lowerSlice = NUMBER_OF_SLICES - lowerSlice; }
     
     //Now update to desired slice
     pointer[0] = (int)((higherSlice - lowerSlice)/2) + lowerSlice;
+    if(pointer[0] < 0) { pointer[0] = NUMBER_OF_SLICES + pointer[0]; }
+    if(pointer[0] >= NUMBER_OF_SLICES) { pointer[0] = pointer[0] - NUMBER_OF_SLICES; }
     pointer[1] = (sliceSumOfDistances[(int)pointer[0]] / numberOfPoints[(int)pointer[0]]);
     
     cout << "Chosen slice: " << pointer[0] << ", points: " << numberOfPoints[(int)pointer[0]] << ", total len: " << sliceSumOfDistances[(int)pointer[0]] << endl;
@@ -324,10 +331,10 @@ void runDrone() // thread runing the drone
     	tello.SendCommand("down 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.5); } 
     }
-    for(int i = 0; i < 12; i++)
+    for(int i = 0; i < 16; i++)
     {
     	cout << "Rotating " << i << endl;
-    	tello.SendCommand("cw 30");
+    	tello.SendCommand("cw 25");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5);
     	tello.SendCommand("up 20");
@@ -336,7 +343,8 @@ void runDrone() // thread runing the drone
     	tello.SendCommand("down 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
-    }
+    	cout << "finish rotating" << endl;
+    } 
     //sleep(150);
     rotating = false;
 }
@@ -350,20 +358,20 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
 	double medianNorm = sqrt(pow(Vars[2], 2) + pow(Vars[3], 2));
 	double directionNorm = sqrt(pow(x, 2) + pow(y, 2));
 	double vectorMultiplication = 0.0, crossProduct = 0.0;
-	double angle;
+	double angle = 0;
 	
 	tello.SendCommand("ccw 20"); // in case the angle is smaller than 20 because the tello can rotate a minimum of 20
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
-    sleep(0.2);
-    tello.SendCommand("cw " + to_string((int)(angle + 0.5)));
+    sleep(0.5);
+    tello.SendCommand("cw " + to_string((int)(Vars[0] + 20.5)));
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
     sleep(1);
     
     while(medianNorm > directionNorm)
     {
-    	tello.SendCommand("forward 30");
+    	tello.SendCommand("forward 40");
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
-    	sleep(0.2);
+    	sleep(0.5);
     	updating = true;
     	while(!updating) { sleep(0.01); }
     	
@@ -381,10 +389,10 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
 			
     	tello.SendCommand("ccw 20");
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
-    	sleep(0.2);
-    	tello.SendCommand("cw " + to_string((int)(angle + 0.5)));
+    	sleep(0.5);
+    	tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
-    	sleep(0.2);
+    	sleep(0.5);
     }
     
     tello.SendCommand("land");
@@ -452,14 +460,15 @@ int main(int argc, char **argv)
     
     cout << "final position**********************************************************************" << endl;
     //final position
-    last_camera_x = Tcw.at<double>(0);
-    last_camera_y = Tcw.at<double>(1);
-    last_camera_z = Tcw.at<double>(2);
+    last_camera_x = Tcw.at<double>(0, 3);
+    last_camera_y = Tcw.at<double>(1, 3);
+    last_camera_z = Tcw.at<double>(2, 3);
     yaw = atan(Tcw.at<double>(1,0)/Tcw.at<double>(0,0));
     pitch = atan(-Tcw.at<double>(2,0)/(sqrt(pow(Tcw.at<double>(2,1), 2)+pow(Tcw.at<double>(2,2), 2))));
-    roll = atan(Tcw.at<double>(2,1)/Tcw.at<double>(2,2));
-    direction_vector_x = sin(yaw)*cos(pitch);
-    direction_vector_y = cos(yaw)*cos(pitch);
+    //roll = atan(Tcw.at<double>(2,1)/Tcw.at<double>(2,2));
+    
+    direction_vector_x = cos(yaw)*cos(pitch);
+    direction_vector_y = sin(yaw)*cos(pitch);
     direction_vector_z = sin(pitch);
     
     // Save camera trajectory and the map
@@ -473,6 +482,7 @@ int main(int argc, char **argv)
     cout << "last_camera_y is " << last_camera_y << endl;
     cout << "last_camera_z is " << last_camera_z << endl;
     
+    SLAM.ActivateLocalizationMode();
     // find the correct angle to the middle of the slice where the door is
     find_route(direction_vector_x, direction_vector_y, last_camera_x, last_camera_y, results);
     cout << "find_route worked " << endl;
