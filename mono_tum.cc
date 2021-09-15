@@ -63,13 +63,13 @@ cv::Mat rot2euler(const cv::Mat & rotationMatrix)
 {
   cv::Mat euler(3,1,CV_64F);
 
-  double m00 = rotationMatrix.at<double>(0,0);
-  double m02 = rotationMatrix.at<double>(0,2);
-  double m10 = rotationMatrix.at<double>(1,0);
-  double m11 = rotationMatrix.at<double>(1,1);
-  double m12 = rotationMatrix.at<double>(1,2);
-  double m20 = rotationMatrix.at<double>(2,0);
-  double m22 = rotationMatrix.at<double>(2,2);
+  double m00 = rotationMatrix.at<float>(0,0);
+  double m02 = rotationMatrix.at<float>(0,2);
+  double m10 = rotationMatrix.at<float>(1,0);
+  double m11 = rotationMatrix.at<float>(1,1);
+  double m12 = rotationMatrix.at<float>(1,2);
+  double m20 = rotationMatrix.at<float>(2,0);
+  double m22 = rotationMatrix.at<float>(2,2);
 
   double x, y, z;
 
@@ -91,9 +91,9 @@ cv::Mat rot2euler(const cv::Mat & rotationMatrix)
     z = atan2(-m20,m00);
   }
 
-  euler.at<double>(0) = x;
-  euler.at<double>(1) = y;
-  euler.at<double>(2) = z;
+  euler.at<double>(0) = (double)(x * 180/M_PI);
+  euler.at<double>(1) = (double)(y * 180/M_PI);
+  euler.at<double>(2) = (double)(z * 180/M_PI);
 
   return euler;
 }
@@ -141,6 +141,7 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     
     //Runs for each line in the csv file (meaning each point)
     getline(fin, line);
+
     while (!fin.eof()) 
     {
         stringstream s(line);
@@ -148,9 +149,9 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         if(word.empty()) break;
         //cout << " calculating point " << endl;
         x = stod(word);
+        getline(s, word, ','); 
         getline(s, word, ',');
-        getline(s, word, ',');
-        y = stod(word); 
+        y = stod(word);
         //cout << "x is " << x << " and y is " << y << endl;
         x = x - originX;
         y = y - originY;
@@ -163,6 +164,7 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         if(normal != 0)
         {
 			angle = acos(vectorMultiplication / (normal * baseNorm)) * 180/M_PI;
+
 			if(crossProduct > 0) { angle = 360 - angle; }
 			//cout << "angle is " << angle << endl;			
 			//Determine the correct slices for the point
@@ -369,35 +371,46 @@ void takeImage() // constantly saves the image from the camera
 
 void runDrone() // thread runing the drone
 {
-	/*
-    tello.SendCommand("takeoff");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
+    /*tello.SendCommand("takeoff");
+    while (!(tello.ReceiveResponse())) { sleep(0.1); }
     while(!mapInit)
     //while(1)
     {
     	sleep(0.5);
     	tello.SendCommand("up 20");
-    	while (!(tello.ReceiveResponse())) { sleep(0.5);} 
+    	while (!(tello.ReceiveResponse())) { sleep(0.1);} 
     	sleep(0.5);
     	tello.SendCommand("down 20");
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); } 
+    	while (!(tello.ReceiveResponse())) { sleep(0.1); } 
     }
     for(int i = 0; i < 12; i++)
     {
-    	cout << "Rotating " << i << endl;
     	tello.SendCommand("cw 30");
-    	while (!(tello.ReceiveResponse())) { sleep(0.1); }
-    	sleep(1);
+    	while (!(tello.ReceiveResponse())) {sleep(0.1); }
+    	sleep(0.5);
     	tello.SendCommand("forward 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
-    	tello.SendCommand("back 30");
+    	tello.SendCommand("back 25");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
-    	cout << "finish rotating" << endl;
-    } */
-    sleep(120);
+    } 
+    tello.SendCommand("forward 20");
+    while (!(tello.ReceiveResponse())) { sleep(0.1); }
+    sleep(0.5);
     rotating = false;
+    while(!moving) { sleep(0.1); }
+    tello.SendCommand("back 20");
+    while(!(tello.ReceiveResponse())) { sleep(0.1); }
+    sleep(0.5);
+    moving = false; */
+    sleep(120);
+    cout << "getting position ****************************************************************************************8" << endl;
+    sleep(10);
+    rotating = false;
+    cout << "return *******************************************************************************************************" << endl;
+    sleep(20);
+    moving = false;
 }
 
 // Vars is the angle and target point
@@ -457,11 +470,10 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
 int main(int argc, char **argv)
 {
 	cv::Mat tmpTcw;
-	cv::Mat euler(3,1,CV_64F);
-	cv::Mat Rcw(3,3,CV_64F);
+	cv::Mat Twc;
+	cv::Mat euler;
 	double last_camera_x = 0.0, last_camera_y = 0.0, last_camera_z = 0.0;
-	double direction_vector_x = 0.0, direction_vector_y = 0.0, direction_vector_z = 0.0;
-	double yaw, pitch, roll;
+	double extra_camera_x = 0.0, extra_camera_y = 0.0, extra_camera_z = 0.0;
 	double results[4] = {0, 0, 0, 0}; 
 	int images = 0;
 	
@@ -479,11 +491,11 @@ int main(int argc, char **argv)
     if (!tello.Bind()) 
     {
         return 0;
-    }  
+    } 
     cout << endl <<  "after binding" << endl;
     
-    thread t1(runDrone); // to make drone spin
-    thread t2(takeImage); // creates the thread to constantly save image from camera
+    thread t1(takeImage); // creates the thread to constantly save image from camera
+    thread t2(runDrone); // to make drone spin
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
     ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::MONOCULAR, true);
@@ -503,50 +515,68 @@ int main(int argc, char **argv)
         {
     		/*cout << "image not empty" << endl; */
             tmpTcw = SLAM.TrackMonocular(im,images++);
-            if(!tmpTcw.empty()) 
-            {
-            	Tcw = tmpTcw;
-            	//yaw = atan2(Tcw.at<double>(0,1), Tcw.at<double>(0,0)) * 180/M_PI;
-    			//pitch = atan2(-Tcw.at<double>(0,2), (sqrt(pow(Tcw.at<double>(1,2), 2)+pow(Tcw.at<double>(2,2), 2)))) * 180/M_PI;
-    			//roll = atan2(Tcw.at<double>(1,2), Tcw.at<double>(2,2)) * 180/M_PI;
-    			Rcw = Tcw.rowRange(0,3).colRange(0,3);
-    			euler = rot2euler(Rcw);
-    			roll = euler.at<double>(0) * 180/M_PI;
-    			pitch = euler.at<double>(1) * 180/M_PI;
-    			yaw = euler.at<double>(2) * 180/M_PI;
-    			cout << "yaw is " << yaw << "\npitch is " << pitch << "\nroll is " << roll << endl;
-    			//cout << "x direction is " << cos(yaw)*cos(pitch) << "\ny direction is " << sin(yaw)*cos(pitch) << "\nz direction is " << sin(pitch) << "\n the normal is " << sqrt(pow(cos(yaw)*cos(pitch), 2.0) + pow(sin(yaw)*cos(pitch), 2.0)) << endl;
+            if(!tmpTcw.empty()) {
+            	Tcw = tmpTcw.clone();
+            	Twc = Tcw.clone().inv();
+    			cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(0, 3) << "\nthe other z is " << Twc.at<float>(0, 3) << "\nthe other normal is " << Twc.at<float>(0, 3) << endl;
+    			euler = rot2euler(Twc);
+    			cout << "euler is: " << endl << euler << endl;
+    			//cout << "normal is: " << endl << Tcw << endl;
+    			//cout << "inverse is: " << endl << Twc << endl;
         	}
             if(!mapInit && !Tcw.empty()){ mapInit = true;}
         }
         sleep(0.05); 
+    } 
+    
+    cout << "almost final position*************************************************" << endl;
+    // position after going forward to find current camera facing direction vector
+    extra_camera_x = (double)Twc.row(0).col(3).at<float>(0);
+    extra_camera_y = (double)Twc.row(1).col(3).at<float>(0);
+    extra_camera_z = (double)Twc.row(2).col(3).at<float>(0);
+    
+    // go back to grab origin point
+    moving = true;
+    
+    SLAM.ActivateLocalizationMode();
+   
+    while(moving)
+    {
+    	if(!im.empty())
+        {
+    		/*cout << "image not empty" << endl; */
+            tmpTcw = SLAM.TrackMonocular(im,images++);
+            if(!tmpTcw.empty()) {
+            	Tcw = tmpTcw;
+    			//cout << "the x is " << Tcw.at<double>(0, 3) << "\nthe y is " << Tcw.at<double>(1, 3) << "\nthe z is " << Tcw.at<double>(2, 3) << "\nthe normal is " << Tcw.at<double>(3, 3) << endl;
+    		}
+        } 
+        sleep(0.05); 
     }
     
-    
-    cout << "final position**********************************************************************" << endl;
+    cout << "final position*********************************************************************8" << endl;
     //final position
-    last_camera_x = Tcw.at<double>(0, 3);
-    last_camera_y = Tcw.at<double>(1, 3);
-    last_camera_z = Tcw.at<double>(2, 3);
-    
-    direction_vector_x = sin(yaw);
-    direction_vector_y = sin(pitch);
-    direction_vector_z = cos(yaw);
+    last_camera_x = (double)Twc.row(0).col(3).at<float>(0);
+    last_camera_y = (double)Twc.row(1).col(3).at<float>(0);
+    last_camera_z = (double)Twc.row(2).col(3).at<float>(0);
     
     // Save camera trajectory and the map
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
     saveMap(SLAM); 
     cout << "map saved " << endl;
-    cout << "direction_vector_x is " << direction_vector_x << endl;
-    cout << "direction_vector_y is " << direction_vector_y << endl;
-    cout << "direction_vector_z is " << direction_vector_z << endl;
+    cout << "extra_camera_x is " << extra_camera_x << endl;
+    cout << "extra_camera_y is " << extra_camera_y << endl;
+    cout << "extra_camera_z is " << extra_camera_z << endl;
     cout << "last_camera_x is " << last_camera_x << endl;
     cout << "last_camera_y is " << last_camera_y << endl;
     cout << "last_camera_z is " << last_camera_z << endl;
     
-    SLAM.ActivateLocalizationMode();
+    extra_camera_x = extra_camera_x - last_camera_x;
+    extra_camera_y = extra_camera_y - last_camera_y;
+    extra_camera_z = extra_camera_z - last_camera_z;
+    
     // find the correct angle to the middle of the slice where the door is
-    find_route(direction_vector_x, direction_vector_z, last_camera_x, last_camera_z, results);
+    find_route(extra_camera_x, extra_camera_z, last_camera_x, last_camera_z, results);
     cout << "find_route worked " << endl;
     cout << "angle is " << results[0] << " and the average distance is " << results[1] << endl;
     thread t3(goToDoor, results, last_camera_x, last_camera_z); // thread for going to the door
@@ -556,11 +586,11 @@ int main(int argc, char **argv)
 	{
 		if(!im.empty())
 		{
+			updating = true;
 			tmpTcw = SLAM.TrackMonocular(im, images++);
-			if(!tmpTcw.empty()) 
-			{
+			if(!tmpTcw.empty()) {
 				Tcw = tmpTcw;
-				updating = false;
+    			updating = false;
     		}
 		}
 		sleep(0.1);	
@@ -571,7 +601,6 @@ int main(int argc, char **argv)
     while (!(tello.ReceiveResponse())) { sleep(0.5); }
     
     // Stop all threads
-    SLAM.Shutdown();
+    SLAM.Shutdown(); 
     return 0;
 }
-
