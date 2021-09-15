@@ -43,19 +43,20 @@ using cv::VideoCapture;
 #define MAP_FILE_NAME "map.csv" //Use a path or put the file at the dame directory as the program
 #define NUMBER_OF_SLICES 300 //Determains the number of slices, *do not use a high number*
 #define MIN_POINT_TO_CONSIDER_SLICE 10 //The minimum amount of points in a slice to consider it as viable
-#define SLICE_QUALITY_TEST 0.85 //Slices that are probably good
+#define SLICE_QUALITY_TEST 0.7 //Slices that are probably good
 #define SLICES_LIMIT 7 //Limits the number of good slices
+#define MAX_TIME 200 // max time to wait for location from orb slam
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
 bool mapInit = false;
 bool rotating = true;
 bool updating = false;
 bool finished = false;
-bool moving = false;
 //VideoCapture capture(0);
 Tello tello{}; 
 cv::Mat im;
-cv::Mat Tcw;
+cv::Mat Twc;
+cv::Mat euler;
 
 
 // Converts a given Rotation Matrix to Euler angles
@@ -63,13 +64,13 @@ cv::Mat rot2euler(const cv::Mat & rotationMatrix)
 {
   cv::Mat euler(3,1,CV_64F);
 
-  double m00 = rotationMatrix.at<float>(0,0);
-  double m02 = rotationMatrix.at<float>(0,2);
-  double m10 = rotationMatrix.at<float>(1,0);
-  double m11 = rotationMatrix.at<float>(1,1);
-  double m12 = rotationMatrix.at<float>(1,2);
-  double m20 = rotationMatrix.at<float>(2,0);
-  double m22 = rotationMatrix.at<float>(2,2);
+  double m00 = (double)rotationMatrix.at<float>(0,0);
+  double m02 = (double)rotationMatrix.at<float>(0,2);
+  double m10 = (double)rotationMatrix.at<float>(1,0);
+  double m11 = (double)rotationMatrix.at<float>(1,1);
+  double m12 = (double)rotationMatrix.at<float>(1,2);
+  double m20 = (double)rotationMatrix.at<float>(2,0);
+  double m22 = (double)rotationMatrix.at<float>(2,2);
 
   double x, y, z;
 
@@ -94,7 +95,11 @@ cv::Mat rot2euler(const cv::Mat & rotationMatrix)
   euler.at<double>(0) = (double)(x * 180/M_PI);
   euler.at<double>(1) = (double)(y * 180/M_PI);
   euler.at<double>(2) = (double)(z * 180/M_PI);
-
+  
+  if(x < 0) { euler.at<double>(0) = euler.at<double>(0) + 360; }
+  if( y < 0) { euler.at<double>(1) = euler.at<double>(1) + 360; }
+  if(z < 0) { euler.at<double>(2) = euler.at<double>(2) + 360; }
+  
   return euler;
 }
 
@@ -102,9 +107,9 @@ cv::Mat rot2euler(const cv::Mat & rotationMatrix)
 //Written by Erel Afoota for locating a path exiting a room as a group project
 //Group members: David Doner, Elad Hirshel, Erel Afoota
 
-// baseX / baseY - x / y value of some point, originX / originY - x / y value for the origin of all slice 
-//Returns the angle of median of desired slice and average distance of points in desired slice to origin and the xy coordinates of the median point in that slice
-void find_route(double baseX, double baseY, double originX, double originY, double* pointer )
+// baseX / baseZ - x / z value of some point, originX / originZ - x / z value for the origin of all slice 
+//Returns the angle of median of desired slice and average distance of points in desired slice to origin and the xz coordinates of the median point in that slice
+void find_route(double baseX, double baseZ, double originX, double originZ, double* pointer )
 {
 	pointer[0] = 0;
 	pointer[1] = 0; // first is index of desired slice, second is average distance of points in desired slice to origin
@@ -128,12 +133,12 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     fin.open(MAP_FILE_NAME, ios::in);
     
     //Calculate normal for base line
-    double baseNorm = sqrt(pow(baseX, 2.0) + pow(baseY, 2.0));
+    double baseNorm = sqrt(pow(baseX, 2.0) + pow(baseZ, 2.0));
     cout << "The baseNorm is " << baseNorm << endl;
     
     //Some variables
     string line, word, temp;
-    double x, y, angle;
+    double x, z, angle;
     double vectorMultiplication = 0.0, crossProduct = 0.0;
     double normal = 0.0;
     double sliceSpacing = 360.0/NUMBER_OF_SLICES; //Calculate space between slices (note that slices intersect)
@@ -151,16 +156,16 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         x = stod(word);
         getline(s, word, ','); 
         getline(s, word, ',');
-        y = stod(word);
+        z = stod(word);
         //cout << "x is " << x << " and y is " << y << endl;
         x = x - originX;
-        y = y - originY;
+        z = z - originZ;
         
         //Calculating the angle compered to the chosen line
-        vectorMultiplication = x * baseX + y * baseY;
-        crossProduct =  baseX * y - baseY * x;
+        vectorMultiplication = x * baseX + z * baseZ;
+        crossProduct =  baseX * z - baseZ * x;
         
-        normal = sqrt(pow(x, 2.0) + pow(y, 2.0));
+        normal = sqrt(pow(x, 2.0) + pow(z, 2.0));
         if(normal != 0)
         {
 			angle = acos(vectorMultiplication / (normal * baseNorm)) * 180/M_PI;
@@ -267,16 +272,16 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         x = stod(word);
         getline(s, word, ',');
         getline(s, word, ',');
-        y = stod(word); 
-        x = x - originX;
-        y = y - originY;
+        z = stod(word); 
         v1.push_back(x);
-        v1.push_back(y);
+        v1.push_back(z);
+        x = x - originX;
+        z = z - originZ;
         //Calculating the angle compered to the chosen line
-        vectorMultiplication = x * baseX + y * baseY;
-        crossProduct =  baseX * y - baseY * x;
+        vectorMultiplication = x * baseX + z * baseZ;
+        crossProduct =  baseX * z - baseZ * x;
         
-        normal = sqrt(pow(x, 2.0) + pow(y, 2.0));
+        normal = sqrt(pow(x, 2.0) + pow(z, 2.0));
         if(normal != 0)
         {
 			angle = acos(vectorMultiplication / (normal * baseNorm)) * 180/M_PI;
@@ -305,28 +310,28 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
 		getline(fin, line);
     }
     // finding the median
-    double median_x, median_y;
+    double median_x = 0, median_z = 0;
     if(!mapOfPoints.empty())
     {
     	auto iter = mapOfPoints.begin();
     	advance(iter, (mapOfPoints.size() / 2) - 1); // to reach middle of list
     	median_x = iter->second.front();
-    	median_y = iter->second.back();
+    	median_z = iter->second.back();
     	if (mapOfPoints.size() % 2 == 0) // checking if number of elements is even
     	{
     		iter++;
     		median_x = (median_x + iter->second.front()) / 2;
-    		median_y = (median_y + iter->second.back()) / 2;
+    		median_z = (median_z + iter->second.back()) / 2;
     	}
     }
-    cout << "The median x is " << median_x << "\nThe median y is " << median_y << endl;
+    cout << "The median x is " << median_x << "\nThe median z is " << median_z << endl;
     pointer[2] = median_x;
-    pointer[3] = median_y;
+    pointer[3] = median_z;
     median_x = median_x - originX;
-    median_y = median_y - originY;
-    vectorMultiplication = median_x * baseX + median_y * baseY;
-    crossProduct =  baseX * median_y - baseY * median_x;
-    normal = sqrt(pow(median_x, 2.0) + pow(median_y, 2.0));
+    median_z = median_z - originZ;
+    vectorMultiplication = median_x * baseX + median_z * baseZ;
+    crossProduct =  baseX * median_z - baseZ * median_x;
+    normal = sqrt(pow(median_x, 2.0) + pow(median_z, 2.0));
     if(normal == 0) { angle = 0; }
     else 
     {
@@ -334,6 +339,7 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     	if(crossProduct > 0) { angle = 360 - angle; }
     }
     pointer[0] = angle;
+    pointer[1] = sqrt(pow(median_x, 2) + pow(median_z, 2));
 }
 
 void saveMap(ORB_SLAM2::System& SLAM){
@@ -371,7 +377,7 @@ void takeImage() // constantly saves the image from the camera
 
 void runDrone() // thread runing the drone
 {
-    /*tello.SendCommand("takeoff");
+    tello.SendCommand("takeoff");
     while (!(tello.ReceiveResponse())) { sleep(0.1); }
     while(!mapInit)
     //while(1)
@@ -383,46 +389,34 @@ void runDrone() // thread runing the drone
     	tello.SendCommand("down 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); } 
     }
-    for(int i = 0; i < 12; i++)
+    for(int i = 0; i < 18; i++)
     {
-    	tello.SendCommand("cw 30");
+    	tello.SendCommand("cw 20");
     	while (!(tello.ReceiveResponse())) {sleep(0.1); }
-    	sleep(0.5);
-    	tello.SendCommand("forward 20");
+    	sleep(1);
+    	tello.SendCommand("up 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
-    	tello.SendCommand("back 25");
+    	tello.SendCommand("down 30");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
+    	cout << "finished rotating" << endl;
     } 
-    tello.SendCommand("forward 20");
-    while (!(tello.ReceiveResponse())) { sleep(0.1); }
-    sleep(0.5);
-    rotating = false;
-    while(!moving) { sleep(0.1); }
-    tello.SendCommand("back 20");
-    while(!(tello.ReceiveResponse())) { sleep(0.1); }
-    sleep(0.5);
-    moving = false; */
-    sleep(120);
-    cout << "getting position ****************************************************************************************8" << endl;
-    sleep(10);
-    rotating = false;
-    cout << "return *******************************************************************************************************" << endl;
-    sleep(20);
-    moving = false;
+	rotating = false;
 }
 
 // Vars is the angle and target point
-void goToDoor(double* Vars, double originX, double originY) // rotate to face door and go to it
+void goToDoor(double* Vars, double originX, double originZ) // rotate to face door and go to it
 {	
-	Vars[2] = Vars[2] - originX;
-	Vars[3] = Vars[3] - originY;
-	double x = Tcw.at<double>(0,3) - originX, y = Tcw.at<double>(2,3) - originY;
-	double medianNorm = sqrt(pow(Vars[2], 2) + pow(Vars[3], 2));
-	double directionNorm = sqrt(pow(x, 2) + pow(y, 2));
+	Vars[2] = Vars[2];
+	Vars[3] = Vars[3];
+	double direction_x = (double)(sin(euler.at<double>(2) * M_PI/180)), direction_z = (double)(cos(euler.at<double>(2) * M_PI/180));
+	double x = (double)Twc.at<float>(0, 3), z = (double)Twc.at<float>(2, 3);
+	double medianNorm = sqrt(pow(Vars[2] - x, 2) + pow(Vars[3] - z, 2));
+	double Norm = sqrt(pow(x - originX, 2) + pow(z - originZ, 2));
+	double baseNorm = sqrt(pow(direction_x, 2) + pow(direction_z, 2));
 	double vectorMultiplication = 0.0, crossProduct = 0.0;
-	double angle = 0;
+	double angle = 0, counter = 0;
 	
 	tello.SendCommand("ccw 20"); // in case the angle is smaller than 20 because the tello can rotate a minimum of 20
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
@@ -431,35 +425,44 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
     sleep(1);
     
-    /*while(medianNorm > directionNorm)
+    while(Vars[1] > Norm && counter < MAX_TIME)
     {
-    	tello.SendCommand("forward 40");
+    	tello.SendCommand("forward 100");
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
     	sleep(0.5);
     	updating = true;
-    	while(!updating) { sleep(0.01); }
-    	
-    	x = Tcw.at<double>(0,3) - originX;
-    	y = Tcw.at<double>(1,3) - originY;
-    	vectorMultiplication = x * Vars[2] + y * Vars[3];
-        crossProduct =  x * Vars[2] - y * Vars[3];
-        directionNorm = sqrt(pow(x, 2.0) + pow(y, 2.0));
-        if(directionNorm == 0 || medianNorm == 0) { angle = 0; }
-        else 
-        {
-        	angle = acos(vectorMultiplication / (medianNorm * directionNorm)) * 180/M_PI;
-			if(crossProduct > 0) { angle = 360 - angle; }
-		}
+    	counter = 0;
+    	while(updating && counter++ < MAX_TIME) { sleep(0.01); }
+    	if(counter < MAX_TIME) 
+    	{ 
+			x = (double)Twc.at<float>(0,3);
+			z = (double)Twc.at<float>(2,3);
+			direction_x = (double)(sin(euler.at<double>(2) * M_PI/180));
+			direction_z = (double)(cos(euler.at<double>(2) * M_PI/180));
 			
-    	tello.SendCommand("ccw 20");
-    	while(!(tello.ReceiveResponse())) { sleep(0.2); }
-    	sleep(0.5);
-    	tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
-    	while(!(tello.ReceiveResponse())) { sleep(0.2); }
-    	sleep(0.5);
-    } */
+			vectorMultiplication = direction_x * (Vars[2] - x) + direction_z * (Vars[3] - z);
+			crossProduct =  direction_x * (Vars[3] - z) - direction_z * (Vars[2] - x);
+			baseNorm = sqrt(pow(direction_x, 2.0) + pow(direction_z, 2.0));
+			Norm = sqrt(pow(x - originX, 2) + pow(z - originZ, 2));
+			medianNorm = sqrt(pow(Vars[2] - x, 2) + pow(Vars[3] - z, 2));
+			
+			if(baseNorm == 0 || medianNorm == 0) { angle = 0; }
+			else 
+			{
+				angle = acos(vectorMultiplication / (medianNorm * baseNorm)) * 180/M_PI;
+				if(crossProduct > 0) { angle = 360 - angle; }
+			}
+				
+			tello.SendCommand("ccw 20");
+			while(!(tello.ReceiveResponse())) { sleep(0.2); }
+			sleep(0.5);
+			tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
+			while(!(tello.ReceiveResponse())) { sleep(0.2); }
+			sleep(0.5);
+		}
+    } 
     
-    tello.SendCommand("forward 200");
+    tello.SendCommand("forward 400");
     while(!(tello.ReceiveResponse())) { sleep(0.2); }
     sleep(1);
     tello.SendCommand("land");
@@ -470,16 +473,12 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
 int main(int argc, char **argv)
 {
 	cv::Mat tmpTcw;
-	cv::Mat Twc;
-	cv::Mat euler;
+	double direction_camera_x = 0.0, direction_camera_y = 0.0, direction_camera_z = 0.0;
 	double last_camera_x = 0.0, last_camera_y = 0.0, last_camera_z = 0.0;
-	double extra_camera_x = 0.0, extra_camera_y = 0.0, extra_camera_z = 0.0;
 	double results[4] = {0, 0, 0, 0}; 
 	int images = 0;
 	
 	
-    
-    
     if(argc != 3)
     {
         cerr << endl << "Usage: ./mono_tum path_to_vocabulary path_to_settings path_to_sequence" << endl;
@@ -487,7 +486,7 @@ int main(int argc, char **argv)
     }
     cout << endl << "main started" << endl;
     
-    //connects to drone
+    //c onnects to drone
     if (!tello.Bind()) 
     {
         return 0;
@@ -516,67 +515,44 @@ int main(int argc, char **argv)
     		/*cout << "image not empty" << endl; */
             tmpTcw = SLAM.TrackMonocular(im,images++);
             if(!tmpTcw.empty()) {
-            	Tcw = tmpTcw.clone();
-            	Twc = Tcw.clone().inv();
-    			cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(0, 3) << "\nthe other z is " << Twc.at<float>(0, 3) << "\nthe other normal is " << Twc.at<float>(0, 3) << endl;
+            	Twc = tmpTcw.clone().inv();
+    			//cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(1, 3) << "\nthe other z is " << Twc.at<float>(2, 3) << "\nthe other normal is " << Twc.at<float>(3, 3) << endl;
     			euler = rot2euler(Twc);
-    			cout << "euler is: " << endl << euler << endl;
+    			//cout << "euler is: " << endl << euler << endl;
     			//cout << "normal is: " << endl << Tcw << endl;
     			//cout << "inverse is: " << endl << Twc << endl;
         	}
-            if(!mapInit && !Tcw.empty()){ mapInit = true;}
+            if(!mapInit && !Twc.empty()){ mapInit = true;}
         }
         sleep(0.05); 
     } 
     
-    cout << "almost final position*************************************************" << endl;
-    // position after going forward to find current camera facing direction vector
-    extra_camera_x = (double)Twc.row(0).col(3).at<float>(0);
-    extra_camera_y = (double)Twc.row(1).col(3).at<float>(0);
-    extra_camera_z = (double)Twc.row(2).col(3).at<float>(0);
-    
-    // go back to grab origin point
-    moving = true;
-    
     SLAM.ActivateLocalizationMode();
-   
-    while(moving)
-    {
-    	if(!im.empty())
-        {
-    		/*cout << "image not empty" << endl; */
-            tmpTcw = SLAM.TrackMonocular(im,images++);
-            if(!tmpTcw.empty()) {
-            	Tcw = tmpTcw;
-    			//cout << "the x is " << Tcw.at<double>(0, 3) << "\nthe y is " << Tcw.at<double>(1, 3) << "\nthe z is " << Tcw.at<double>(2, 3) << "\nthe normal is " << Tcw.at<double>(3, 3) << endl;
-    		}
-        } 
-        sleep(0.05); 
-    }
     
     cout << "final position*********************************************************************8" << endl;
     //final position
-    last_camera_x = (double)Twc.row(0).col(3).at<float>(0);
-    last_camera_y = (double)Twc.row(1).col(3).at<float>(0);
-    last_camera_z = (double)Twc.row(2).col(3).at<float>(0);
+    last_camera_x = (double)Twc.at<float>(0, 3);
+    last_camera_y = (double)Twc.at<float>(1, 3);
+    last_camera_z = (double)Twc.at<float>(2, 3);
+    
+    direction_camera_x = (double)(sin(euler.at<double>(2) * M_PI/180));
+    direction_camera_y = (double)(sin(euler.at<double>(0) * M_PI/180));
+    direction_camera_z = (double)(cos(euler.at<double>(2) * M_PI/180));
+    
     
     // Save camera trajectory and the map
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
     saveMap(SLAM); 
     cout << "map saved " << endl;
-    cout << "extra_camera_x is " << extra_camera_x << endl;
-    cout << "extra_camera_y is " << extra_camera_y << endl;
-    cout << "extra_camera_z is " << extra_camera_z << endl;
+    cout << "direction_camera_x is " << direction_camera_x << endl;
+    cout << "direction_camera_y is " << direction_camera_y << endl;
+    cout << "direction_camera_z is " << direction_camera_z << endl;
     cout << "last_camera_x is " << last_camera_x << endl;
     cout << "last_camera_y is " << last_camera_y << endl;
     cout << "last_camera_z is " << last_camera_z << endl;
     
-    extra_camera_x = extra_camera_x - last_camera_x;
-    extra_camera_y = extra_camera_y - last_camera_y;
-    extra_camera_z = extra_camera_z - last_camera_z;
-    
     // find the correct angle to the middle of the slice where the door is
-    find_route(extra_camera_x, extra_camera_z, last_camera_x, last_camera_z, results);
+    find_route(direction_camera_x, direction_camera_z, last_camera_x, last_camera_z, results);
     cout << "find_route worked " << endl;
     cout << "angle is " << results[0] << " and the average distance is " << results[1] << endl;
     thread t3(goToDoor, results, last_camera_x, last_camera_z); // thread for going to the door
@@ -586,12 +562,16 @@ int main(int argc, char **argv)
 	{
 		if(!im.empty())
 		{
-			updating = true;
 			tmpTcw = SLAM.TrackMonocular(im, images++);
 			if(!tmpTcw.empty()) {
-				Tcw = tmpTcw;
+             	Twc = tmpTcw.clone().inv();
+    			//cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(1, 3) << "\nthe other z is " << Twc.at<float>(2, 3) << "\nthe other normal is " << 	Twc.at<float>(3, 3) << endl;
+    			euler = rot2euler(Twc);
+    			//cout << "euler is: " << endl << euler << endl;
+    			//cout << "normal is: " << endl << Tcw << endl;
+    			//cout << "inverse is: " << endl << Twc << endl;
     			updating = false;
-    		}
+        	}
 		}
 		sleep(0.1);	
 	}    
