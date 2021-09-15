@@ -41,13 +41,28 @@ using cv::waitKey;
 
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
-VideoCapture capture{TELLO_STREAM_URL, CAP_FFMPEG};
-//VideoCapture capture(0);
+//VideoCapture capture{TELLO_STREAM_URL, CAP_FFMPEG};
+VideoCapture capture(0);
 Tello tello{}; 
 cv::Mat im;
 
 void LoadImages(const string &strFile, vector<string> &vstrImageFilenames,
                 vector<double> &vTimestamps);
+
+void saveMap(ORB_SLAM2::System &SLAM){
+    std::vector<ORB_SLAM2::MapPoint*> mapPoints = SLAM.GetMap()->GetAllMapPoints();
+    std::ofstream pointData;
+    pointData.open("/tmp/pointData.csv");
+    for(auto p : mapPoints) {
+        if (p != NULL)
+        {
+            auto point = p->GetWorldPos();
+            Eigen::Matrix<double, 3, 1> v = ORB_SLAM2::Converter::toVector3d(point);
+            pointData << v.x() << "," << v.y() << "," << v.z()<<  std::endl;
+        }
+    }
+    pointData.close();
+}
 
 void takeImage() // constantly saves the image from the camera
 {
@@ -64,7 +79,7 @@ void runDrone() // constantly saves the image from the camera
     {
     	tello.SendCommand("cw 20");
     	while (!(tello.ReceiveResponse())); 
-    	sleep(1);
+    	sleep(0.1);
     }
 }
 
@@ -77,24 +92,24 @@ int main(int argc, char **argv)
     }
     cout << endl << "main started" << endl;
     thread t1(takeImage); // creates the thread to constantly save image from camera
-    thread t2(runDrone);
+    //thread t2(runDrone);
     cout << endl << "after thread" << endl;
     
     // connects to drone
-    if (!tello.Bind()) 
+    /*if (!tello.Bind()) 
     {
         return 0;
-    }
+    }*/
     cout << endl <<  "after binding" << endl;
     
     // turns on video stream and makes the drone fly
-    tello.SendCommand("streamon");
+    /*tello.SendCommand("streamon");
     while (!(tello.ReceiveResponse()));
     tello.SendCommand("takeoff");
-    while (!(tello.ReceiveResponse())); 
+    while (!(tello.ReceiveResponse())); */
 
     // sets the length of the main loop, tframe is for time statistics
-    int nImages = 100000;
+    int nImages = 10000;
     double tframe;
     
 
@@ -107,7 +122,6 @@ int main(int argc, char **argv)
     // Main loop
     for(int ni=0; ni<nImages; ni++)
     {
-        capture >> im; // save image
         tframe = ni; // time statistic
 	
         // Pass the image to the SLAM system
@@ -115,6 +129,7 @@ int main(int argc, char **argv)
         {
                 SLAM.TrackMonocular(im,tframe);
         }
+        sleep(0.5);
     }
 
     // Stop all threads
@@ -123,13 +138,13 @@ int main(int argc, char **argv)
     
     // Save camera trajectory and the map
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
-    SLAM.SaveMap("ZA WARUDO.txt");
+    saveMap(SLAM);
     
     // land and turns off stream from drone
-    tello.SendCommand("land");
+    /*tello.SendCommand("land");
     while (!(tello.ReceiveResponse()));
     tello.SendCommand("streamoff");
-    while (!(tello.ReceiveResponse())); 
+    while (!(tello.ReceiveResponse())); */
     return 0;
 }
 
