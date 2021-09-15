@@ -20,14 +20,14 @@
 
 #include <string.h>
 #include <math.h>
-#include<iostream>
-#include<algorithm>
-#include<fstream>
-#include<chrono>
+#include <iostream>
+#include <algorithm>
+#include <fstream>
+#include <chrono>
 #include <unistd.h>	
-#include<opencv2/core/core.hpp>
-#include<opencv2/highgui.hpp>
-#include<opencv2/imgcodecs.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include "/usr/local/include/ctello.h"
 #include "MapDrawer.h"
 
@@ -45,7 +45,7 @@ using cv::VideoCapture;
 #define MIN_POINT_TO_CONSIDER_SLICE 10 //The minimum amount of points in a slice to consider it as viable
 #define SLICE_QUALITY_TEST 0.55 //Slices that are probably good
 #define SLICES_LIMIT 20 //Limits the number of good slices
-#define MAX_TIME 200 // max time to wait for location from orb slam
+#define MAX_TIME 20 // max time to wait for location from orb slam
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
 bool mapInit = false;
@@ -395,12 +395,12 @@ void runDrone() // thread runing the drone
     	tello.SendCommand("cw 20");
     	while (!(tello.ReceiveResponse())) {sleep(0.1); }
     	sleep(1);
-    	tello.SendCommand("forward 20");
+    	tello.SendCommand("up 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
-    	sleep(0.5); 
-    	tello.SendCommand("back 25");
+    	sleep(1); 
+    	tello.SendCommand("down 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
-    	sleep(0.5); 
+    	sleep(1); 
     	cout << "finished rotating" << endl;
     } 
 	rotating = false;
@@ -409,24 +409,22 @@ void runDrone() // thread runing the drone
 // Vars is the angle and target point
 void goToDoor(double* Vars, double originX, double originZ) // rotate to face door and go to it
 {	
-	Vars[2] = Vars[2];
-	Vars[3] = Vars[3];
 	double direction_x = (double)(sin(euler.at<double>(2) * M_PI/180)), direction_z = (double)(cos(euler.at<double>(2) * M_PI/180));
 	double x = (double)Twc.at<float>(0, 3), z = (double)Twc.at<float>(2, 3);
 	double medianNorm = sqrt(pow(Vars[2] - x, 2) + pow(Vars[3] - z, 2));
 	double Norm = sqrt(pow(x - originX, 2) + pow(z - originZ, 2));
 	double baseNorm = sqrt(pow(direction_x, 2) + pow(direction_z, 2));
 	double vectorMultiplication = 0.0, crossProduct = 0.0;
-	double angle = 0, counter = 0;
+	double angle = 0;
 	
 	tello.SendCommand("ccw 20"); // in case the angle is smaller than 20 because the tello can rotate a minimum of 20
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
     sleep(0.5);
-    tello.SendCommand("cw " + to_string((int)(Vars[0] + 20.5)));
+    tello.SendCommand("cw " + to_string((int)(Vars[0] + 20)));
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
-    sleep(1);
+    sleep(2.5);
     
-    while(Vars[1] > Norm && counter < MAX_TIME)
+    while(Vars[1] > Norm && counting < MAX_TIME)
     {
     	tello.SendCommand("forward 50");
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
@@ -568,7 +566,6 @@ int main(int argc, char **argv)
     cout << "angle is " << results[0] << " and the average distance is " << results[1] << endl;
     thread t3(goToDoor, results, last_camera_x, last_camera_z); // thread for going to the door
     cout << "another thread " << endl;
-    
 	while(!finished)
 	{
 		if(!im.empty())
