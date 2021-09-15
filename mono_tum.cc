@@ -20,14 +20,16 @@
 
 #include <string.h>
 #include <math.h>
-#include<iostream>
-#include<algorithm>
-#include<fstream>
-#include<chrono>
+
+#include <iostream>
+#include <algorithm>
+#include <fstream>
+#include <chrono>
 #include <unistd.h>	
-#include<opencv2/core/core.hpp>
-#include<opencv2/highgui.hpp>
-#include<opencv2/imgcodecs.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+
 #include "/usr/local/include/ctello.h"
 #include "MapDrawer.h"
 
@@ -39,40 +41,98 @@ using ctello::Tello;
 using cv::CAP_FFMPEG;
 using cv::imshow;
 using cv::VideoCapture;
-using cv::waitKey;
 
 #define MAP_FILE_NAME "map.csv" //Use a path or put the file at the dame directory as the program
-#define NUMBER_OF_SLICES 100 //Determains the number of slices, *do not use a high number*
-#define MIN_POINT_TO_CONSIDER_SLICE 20 //The minimum amount of points in a slice to consider it as viable
+#define NUMBER_OF_SLICES 300 //Determains the number of slices, *do not use a high number*
+#define MIN_POINT_TO_CONSIDER_SLICE 10 //The minimum amount of points in a slice to consider it as viable
+#define SLICE_QUALITY_TEST 0.55 //Slices that are probably good
+#define SLICES_LIMIT 20 //Limits the number of good slices
+#define MAX_TIME 20 // max time to wait for location from orb slam
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
-bool rotating = true;
 bool mapInit = false;
+bool rotating = true;
+bool updating = false;
 bool finished = false;
+int counting = 0;
 //VideoCapture capture(0);
 Tello tello{}; 
 cv::Mat im;
+cv::Mat Twc;
+cv::Mat euler;
+
+
+// Converts a given Rotation Matrix to Euler angles
+cv::Mat rot2euler(const cv::Mat & rotationMatrix)
+{
+  cv::Mat euler(3,1,CV_64F);
+
+  double m00 = (double)rotationMatrix.at<float>(0,0);
+  double m02 = (double)rotationMatrix.at<float>(0,2);
+  double m10 = (double)rotationMatrix.at<float>(1,0);
+  double m11 = (double)rotationMatrix.at<float>(1,1);
+  double m12 = (double)rotationMatrix.at<float>(1,2);
+  double m20 = (double)rotationMatrix.at<float>(2,0);
+  double m22 = (double)rotationMatrix.at<float>(2,2);
+
+  double x, y, z;
+
+  // Assuming the angles are in radians.
+  if (m10 > 0.998) { // singularity at north pole
+    x = 0;
+    y = CV_PI/2;
+    z = atan2(m02,m22);
+  }
+  else if (m10 < -0.998) { // singularity at south pole
+    x = 0;
+    y = -CV_PI/2;
+    z = atan2(m02,m22);
+  }
+  else
+  {
+    x = atan2(-m12,m11);
+    y = asin(m10);
+    z = atan2(-m20,m00);
+  }
+
+  euler.at<double>(0) = (double)(x * 180/M_PI);
+  euler.at<double>(1) = (double)(y * 180/M_PI);
+  euler.at<double>(2) = (double)(z * 180/M_PI);
+  
+  if(x < 0) { euler.at<double>(0) = euler.at<double>(0) + 360; }
+  if( y < 0) { euler.at<double>(1) = euler.at<double>(1) + 360; }
+  if(z < 0) { euler.at<double>(2) = euler.at<double>(2) + 360; }
+  
+  return euler;
+}
+
 
 
 //Written by Erel Afoota for locating a path exiting a room as a group project
 //Group members: David Doner, Elad Hirshel, Erel Afoota
 
-// baseX / baseY - x / y value of some point, originX / originY - x / y value for the origin of all slices
-//Returns the index of desired slice
-int read_record(double baseX, double baseY, double originX, double originY)
+
+// baseX / baseZ - x / z value of some point, originX / originZ - x / z value for the origin of all slice 
+//Returns the angle of median of desired slice and average distance of points in desired slice to origin and the xz coordinates of the median point in that slice
+void find_route(double baseX, double baseZ, double originX, double originZ, double* pointer )
 {
+	pointer[0] = 0;
+	pointer[1] = 0; // first is index of desired slice, second is average distance of points in desired slice to origin
     //Slices arrays
     double sliceSumOfDistances[NUMBER_OF_SLICES]; //Holds the sum of associated points distances
     for(int i = 0; i < NUMBER_OF_SLICES; i++)
     {
-    	sliceSumOfDistances[NUMBER_OF_SLICES] = 0.0;
+
+    	sliceSumOfDistances[i] = 0.0;
     }
     int numberOfPoints[NUMBER_OF_SLICES]; //Holds the number of associated points
+    //cout << "Init..." << endl;
     for(int i = 0; i < NUMBER_OF_SLICES; i++)
     {    
-        numberOfPoints[NUMBER_OF_SLICES] = 0;
+        numberOfPoints[i] = 0;
+        //cout << "Slice: " << i << " = " << numberOfPoints[i] << endl;
     }
-    
+
     // File pointer
     fstream fin;
   
@@ -80,39 +140,48 @@ int read_record(double baseX, double baseY, double originX, double originY)
     fin.open(MAP_FILE_NAME, ios::in);
     
     //Calculate normal for base line
-    double baseNormal = sqrt(pow(baseX - originX, 2.0) + pow(baseY - originY, 2.0));
-  
+    double baseNorm = sqrt(pow(baseX, 2.0) + pow(baseZ, 2.0));
+    cout << "The baseNorm is " << baseNorm << endl;
+    
     //Some variables
     string line, word, temp;
-    double x, y, angle;
-    double vectorMultiplication = 0.0, normal = 0.0;
-    double sliceSpacing = 360/NUMBER_OF_SLICES;
-    
-    //Calculate space between slices (note that slices intersect)
-    
+    double x, z, angle;
+    double vectorMultiplication = 0.0, crossProduct = 0.0;
+    double normal = 0.0;
+    double sliceSpacing = 360.0/NUMBER_OF_SLICES; //Calculate space between slices (note that slices intersect)
+    int higherSlice = 0, lowerSlice = 0;
     
     //Runs for each line in the csv file (meaning each point)
-    while (fin >> temp) {
-  
-        getline(fin, line);
-  
+    getline(fin, line);
+
+    while (!fin.eof()) 
+    {
         stringstream s(line);
         getline(s, word, ',');
+        if(word.empty()) break;
+        //cout << " calculating point " << endl;
         x = stod(word);
+        getline(s, word, ','); 
         getline(s, word, ',');
-        getline(s, word, ',');
-        y = stod(word);
+        z = stod(word);
+        //cout << "x is " << x << " and y is " << y << endl;
+        x = x - originX;
+        z = z - originZ;
         
-        //Calculating the angle compered to choosen line
-        vectorMultiplication = x * baseX + y * baseY;
-        normal = sqrt(pow(x - originX, 2.0) + pow(y - originY, 2.0));
-        if(normal * baseNormal != 0.0)
+        //Calculating the angle compered to the chosen line
+        vectorMultiplication = x * baseX + z * baseZ;
+        crossProduct =  baseX * z - baseZ * x;
+        
+        normal = sqrt(pow(x, 2.0) + pow(z, 2.0));
+        if(normal != 0)
         {
-			angle = acos(vectorMultiplication / (normal * baseNormal));
-			
+			angle = acos(vectorMultiplication / (normal * baseNorm)) * 180/M_PI;
+
+			if(crossProduct > 0) { angle = 360 - angle; }
+			//cout << "angle is " << angle << endl;			
 			//Determine the correct slices for the point
-			int lowerSlice = (int)(angle / sliceSpacing);
-			int higherSlice;
+			lowerSlice = (int)(angle / sliceSpacing);
+
 			if((lowerSlice * sliceSpacing) >= (sliceSpacing / 2.0))
 			{
 				higherSlice = lowerSlice + 1;
@@ -127,36 +196,166 @@ int read_record(double baseX, double baseY, double originX, double originY)
 			}
 			
 			//Update slice's arrays
-			numberOfPoints[lowerSlice] += 1;
-			numberOfPoints[higherSlice] += 1;
-			sliceSumOfDistances[lowerSlice] += normal;
-			sliceSumOfDistances[higherSlice] += normal;
+
+			numberOfPoints[lowerSlice] = numberOfPoints[lowerSlice] + 1;
+			numberOfPoints[higherSlice] = numberOfPoints[higherSlice] + 1;
+			sliceSumOfDistances[lowerSlice] = sliceSumOfDistances[lowerSlice] + normal;
+			sliceSumOfDistances[higherSlice] = sliceSumOfDistances[higherSlice] + normal;
+			//cout << "Slice are: " << lowerSlice << ", " << higherSlice << endl;
+			//cout << "Num: " << numberOfPoints[lowerSlice] << ", " << numberOfPoints[higherSlice] << endl;
 		}
+		getline(fin, line);
     }
     
     //Now we find our desired line
-    int result = 0; //The index of the desired slice
-    double resultAdjustedLen = 0.0, tempAdjustedLen = 0.0; //Average len of a slice
+    double tempAdjustedLen = 0.0; //Average len of a slice
     for(int i = 0; i < NUMBER_OF_SLICES; i++)
     {
-        tempAdjustedLen = (sliceSumOfDistances[i] / numberOfPoints[i]);
-        if(tempAdjustedLen > resultAdjustedLen && numberOfPoints[i] >= MIN_POINT_TO_CONSIDER_SLICE)
-        {
-            result = i;
-            resultAdjustedLen = tempAdjustedLen;
+    	if (numberOfPoints[i] > 0)
+    	{
+			tempAdjustedLen = (sliceSumOfDistances[i] / numberOfPoints[i]);
+		    cout << "slice: " << i <<", avg len " << tempAdjustedLen << ", num of points " << numberOfPoints[i] << endl;
+		    if(tempAdjustedLen > pointer[1] && numberOfPoints[i] >= MIN_POINT_TO_CONSIDER_SLICE)
+		    {
+		        pointer[0] = i;
+		        pointer[1] = tempAdjustedLen;
+		    }
         }
     }
-    return result;
+    cout << "Best slice: " << pointer[0] << ", points: " << numberOfPoints[(int)pointer[0]] << ", total len: " << sliceSumOfDistances[(int)pointer[0]] << endl;
+    
+    //Find a prefered slice
+    //First higher slices
+    higherSlice = (int)pointer[0];
+    lowerSlice = (int)pointer[0];
+    bool over = false, below = false;
+    int counter = 0;
+    while(counter < SLICES_LIMIT && numberOfPoints[higherSlice + 1] > MIN_POINT_TO_CONSIDER_SLICE && (sliceSumOfDistances[higherSlice + 1] / numberOfPoints[higherSlice + 1]) >= SLICE_QUALITY_TEST * pointer[1])
+    {
+    	higherSlice++;
+    	counter++;
+    	if (higherSlice >= NUMBER_OF_SLICES){
+    		higherSlice = 0;
+    		over = true;
+    	}
+    }
+    
+    //Now lowest slice
+    counter = 0;
+    while(counter < SLICES_LIMIT && numberOfPoints[lowerSlice - 1] > MIN_POINT_TO_CONSIDER_SLICE && (sliceSumOfDistances[lowerSlice - 1] / numberOfPoints[lowerSlice - 1]) >= SLICE_QUALITY_TEST * pointer[1])
+    {
+    	lowerSlice--;
+    	counter++;
+    	if (lowerSlice < 0){
+    		lowerSlice = NUMBER_OF_SLICES - 1;
+    		below = true;
+    	}
+    }
+    
+    cout << "higher slice is " << higherSlice << "\nlower slice is " << lowerSlice << endl;
+    if(over) { higherSlice = higherSlice + NUMBER_OF_SLICES; }
+    if(below) { lowerSlice = lowerSlice - NUMBER_OF_SLICES; }
+    cout << "higher slice is " << higherSlice << "\nlower slice is " << lowerSlice << endl;
+    
+    //Now update to desired slice
+    pointer[0] = (int)((higherSlice + lowerSlice)/2);
+    if(pointer[0] < 0) { pointer[0] = NUMBER_OF_SLICES + pointer[0]; }
+    if(pointer[0] >= NUMBER_OF_SLICES) { pointer[0] = pointer[0] - NUMBER_OF_SLICES; }
+    pointer[1] = (sliceSumOfDistances[(int)pointer[0]] / numberOfPoints[(int)pointer[0]]);
+    
+    cout << "Chosen slice: " << pointer[0] << ", points: " << numberOfPoints[(int)pointer[0]] << ", total len: " << sliceSumOfDistances[(int)pointer[0]] << endl;
+    
+    map<double, vector<double>> mapOfPoints;
+    vector<double> v1;
+    
+    
+    fin.clear();
+    fin.seekg(0, ios::beg);
+    //Runs for each line in the csv file (meaning each point)
+    getline(fin, line); 
+    while (!fin.eof()) 
+    {
+        stringstream s(line);
+        getline(s, word, ',');
+        if(word.empty()) break;
+        x = stod(word);
+        getline(s, word, ',');
+        getline(s, word, ',');
+        z = stod(word); 
+        v1.push_back(x);
+        v1.push_back(z);
+        x = x - originX;
+        z = z - originZ;
+        //Calculating the angle compered to the chosen line
+        vectorMultiplication = x * baseX + z * baseZ;
+        crossProduct =  baseX * z - baseZ * x;
+        
+        normal = sqrt(pow(x, 2.0) + pow(z, 2.0));
+        if(normal != 0)
+        {
+			angle = acos(vectorMultiplication / (normal * baseNorm)) * 180/M_PI;
+			if(crossProduct > 0) { angle = 360 - angle; }
+			//Determine the correct slices for the point
+			lowerSlice = (int)(angle / sliceSpacing);
+			if((lowerSlice * sliceSpacing) >= (sliceSpacing / 2.0))
+			{
+				higherSlice = lowerSlice + 1;
+				if (higherSlice >= NUMBER_OF_SLICES)
+				    higherSlice = 0;
+			}
+			else
+			{
+				higherSlice = lowerSlice - 1;
+				if (higherSlice < 0)
+				    higherSlice = NUMBER_OF_SLICES - 1;
+			}
+			
+			if(lowerSlice == pointer[0] || higherSlice == pointer[0])
+			{
+				mapOfPoints.insert(make_pair(normal, v1));
+			}
+		}
+		v1.clear();
+		getline(fin, line);
+    }
+    // finding the median
+    double median_x = 0, median_z = 0;
+    if(!mapOfPoints.empty())
+    {
+    	auto iter = mapOfPoints.begin();
+    	advance(iter, (mapOfPoints.size() / 2) - 1); // to reach middle of list
+    	median_x = iter->second.front();
+    	median_z = iter->second.back();
+    	if (mapOfPoints.size() % 2 == 0) // checking if number of elements is even
+    	{
+    		iter++;
+    		median_x = (median_x + iter->second.front()) / 2;
+    		median_z = (median_z + iter->second.back()) / 2;
+    	}
+    }
+    cout << "The median x is " << median_x << "\nThe median z is " << median_z << endl;
+    pointer[2] = median_x;
+    pointer[3] = median_z;
+    median_x = median_x - originX;
+    median_z = median_z - originZ;
+    vectorMultiplication = median_x * baseX + median_z * baseZ;
+    crossProduct =  baseX * median_z - baseZ * median_x;
+    normal = sqrt(pow(median_x, 2.0) + pow(median_z, 2.0));
+    if(normal == 0) { angle = 0; }
+    else 
+    {
+    	angle = acos(vectorMultiplication / (normal * baseNorm)) * 180/M_PI;
+    	if(crossProduct > 0) { angle = 360 - angle; }
+    }
+    pointer[0] = angle;
+    pointer[1] = sqrt(pow(median_x, 2) + pow(median_z, 2));
 }
-
-
-void LoadImages(const string &strFile, vector<string> &vstrImageFilenames,
-                vector<double> &vTimestamps);
 
 void saveMap(ORB_SLAM2::System& SLAM){
     std::vector<ORB_SLAM2::MapPoint*> mapPoints = SLAM.GetMap()->GetAllMapPoints();
     std::ofstream pointData;
-    pointData.open("~/ORB_SLAM2/Examples/Monocular/pointData.csv");
+    pointData.open(MAP_FILE_NAME);
+
     for(auto p : mapPoints) {
         if (p != NULL)
         {
@@ -172,98 +371,136 @@ void takeImage() // constantly saves the image from the camera
 {
     // turns on video stream and makes the drone fly
     tello.SendCommand("streamon");
-    while (!(tello.ReceiveResponse())) { sleep(0.5);}
-    
+
+    while (!(tello.ReceiveResponse())) { sleep(0.2);}
     
     VideoCapture capture{TELLO_STREAM_URL, CAP_FFMPEG};
-    while(true)
+    while(!finished)
+
     {
     	capture >> im;
     	/*if(im.empty())
     	{
     		cout << "image is empty" << endl;
     	} */
-    	sleep(0.1);
+
+    	sleep(0.05);
     }
 }
 
-void runDrone() // constantly saves the image from the camera
+void runDrone() // thread runing the drone
 {
     tello.SendCommand("takeoff");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
+    while (!(tello.ReceiveResponse())) { sleep(0.1); }
     while(!mapInit)
+    //while(1)
     {
-    	sleep(2);
+    	sleep(0.5);
     	tello.SendCommand("up 20");
-    	while (!(tello.ReceiveResponse())) { sleep(0.5);} 
-    	sleep(2);
+    	while (!(tello.ReceiveResponse())) { sleep(0.1);} 
+    	sleep(0.5);
     	tello.SendCommand("down 20");
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); } 
+    	while (!(tello.ReceiveResponse())) { sleep(0.1); } 
     }
-    for(int i = 0; i < 16; i++)
+    for(int i = 0; i < 18; i++)
     {
-    	tello.SendCommand("cw 25");
-    	while (!(tello.ReceiveResponse())) {sleep(0.5); }
-    	sleep(2);
+    	tello.SendCommand("cw 20");
+    	while (!(tello.ReceiveResponse())) {sleep(0.1); }
+    	sleep(1);
     	tello.SendCommand("up 20");
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); }
+    	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(1); 
     	tello.SendCommand("down 20");
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); }
+    	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(1); 
-    	
-    }
-    tello.SendCommand("forward 20");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
-    sleep(2);
-    rotating = false;
+    	cout << "finished rotating" << endl;
+    } 
+	rotating = false;
 }
 
-void goToDoor(int angle)
-{
-	if(angle < 180)
-	{
-	    tello.SendCommand("ccw 20"); // in case the angle is lower than 20
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); }
-    	tello.SendCommand("cw " + (angle+20)); // adds 20 to match the earlier rotation
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); }
-	}	
-	else
-	{
-		tello.SendCommand("cw 20"); // in case the angle we need to rotate is lower than 20
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); }
-    	tello.SendCommand("ccw " + (380-angle)); // 360-angle is the angle we need to rotate and add 20 to match the earlier rotation
-    	while (!(tello.ReceiveResponse())) { sleep(0.5); }
-	}
-	tello.SendCommand("forward 100");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
-    tello.SendCommand("land");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
-    finished = true;
-    tello.SendCommand("streamoff");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
-}
-
-void showCamera()
-{
-	while(!finished)
-	{
-		if(!im.empty())
-		{
-			imshow("finally this project is over", im);
+// Vars is the angle and target point
+void goToDoor(double* Vars, double originX, double originZ) // rotate to face door and go to it
+{	
+	double direction_x = (double)(sin(euler.at<double>(2) * M_PI/180)), direction_z = (double)(cos(euler.at<double>(2) * M_PI/180));
+	double x = (double)Twc.at<float>(0, 3), z = (double)Twc.at<float>(2, 3);
+	double medianNorm = sqrt(pow(Vars[2] - x, 2) + pow(Vars[3] - z, 2));
+	double Norm = sqrt(pow(x - originX, 2) + pow(z - originZ, 2));
+	double baseNorm = sqrt(pow(direction_x, 2) + pow(direction_z, 2));
+	double vectorMultiplication = 0.0, crossProduct = 0.0;
+	double angle = 0;
+	
+	tello.SendCommand("ccw 20"); // in case the angle is smaller than 20 because the tello can rotate a minimum of 20
+    while (!(tello.ReceiveResponse())) { sleep(0.2); }
+    sleep(0.5);
+    tello.SendCommand("cw " + to_string((int)(Vars[0] + 20)));
+    while (!(tello.ReceiveResponse())) { sleep(0.2); }
+    sleep(2.5);
+    
+    while(Vars[1] > Norm && counting < MAX_TIME)
+    {
+    	tello.SendCommand("forward 50");
+    	while(!(tello.ReceiveResponse())) { sleep(0.2); }
+    	sleep(0.5);
+    	updating = true;
+    	while(updating && counting < MAX_TIME) { sleep(0.01); }
+    	if(counting < MAX_TIME) 
+    	{ 
+			x = (double)Twc.at<float>(0,3);
+			z = (double)Twc.at<float>(2,3);
+			direction_x = (double)(sin(euler.at<double>(2) * M_PI/180));
+			direction_z = (double)(cos(euler.at<double>(2) * M_PI/180));
+			
+			vectorMultiplication = direction_x * (Vars[2] - x) + direction_z * (Vars[3] - z);
+			crossProduct =  direction_x * (Vars[3] - z) - direction_z * (Vars[2] - x);
+			baseNorm = sqrt(pow(direction_x, 2.0) + pow(direction_z, 2.0));
+			Norm = sqrt(pow(x - originX, 2) + pow(z - originZ, 2));
+			medianNorm = sqrt(pow(Vars[2] - x, 2) + pow(Vars[3] - z, 2));
+			
+			if(baseNorm == 0 || medianNorm == 0) { angle = 0; }
+			else 
+			{
+				angle = acos(vectorMultiplication / (medianNorm * baseNorm)) * 180/M_PI;
+			}
+			
+			if(crossProduct < 0)
+			{
+				tello.SendCommand("ccw 20");
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+				tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+			}
+			else
+			{
+				tello.SendCommand("cw 20");
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+				tello.SendCommand("ccw " + to_string((int)(angle + 20.5)));
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+			}
 		}
-		sleep(0.5);
-	}
+    } 
+    
+    tello.SendCommand("forward 400");
+    while(!(tello.ReceiveResponse())) { sleep(0.2); }
+    sleep(1);
+    tello.SendCommand("land");
+    while (!(tello.ReceiveResponse())) { sleep(0.2); }
+    finished = true;
+
 }
 
 int main(int argc, char **argv)
 {
-	double last_camera_x, last_camera_z;
-	double extra_camera_x, extra_camera_z;
-	double angle;
+	cv::Mat tmpTcw;
+	double direction_camera_x = 0.0, direction_camera_y = 0.0, direction_camera_z = 0.0;
+	double last_camera_x = 0.0, last_camera_y = 0.0, last_camera_z = 0.0;
+	double results[4] = {0, 0, 0, 0}; 
 	int images = 0;
-    cv::Mat Twc;
-    
+	
+	
     if(argc != 3)
     {
         cerr << endl << "Usage: ./mono_tum path_to_vocabulary path_to_settings path_to_sequence" << endl;
@@ -271,11 +508,11 @@ int main(int argc, char **argv)
     }
     cout << endl << "main started" << endl;
     
-    //connects to drone
+    //c onnects to drone
     if (!tello.Bind()) 
     {
         return 0;
-    }
+    } 
     cout << endl <<  "after binding" << endl;
     
     thread t1(takeImage); // creates the thread to constantly save image from camera
@@ -291,82 +528,82 @@ int main(int argc, char **argv)
     cout << "Start processing sequence ..." << endl; 
     
     // Main loop
-    //for(int ni=0; ni<nImages; ni++)
+    //for(int ni=0; ni<2500; ni++)
     while(rotating)
     {
-	
         // Pass the image to the SLAM system
         if(!im.empty())
         {
     		/*cout << "image not empty" << endl; */
-            Twc = SLAM.TrackMonocular(im,images++);
+            tmpTcw = SLAM.TrackMonocular(im,images++);
+            if(!tmpTcw.empty()) {
+            	Twc = tmpTcw.clone().inv();
+    			//cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(1, 3) << "\nthe other z is " << Twc.at<float>(2, 3) << "\nthe other normal is " << Twc.at<float>(3, 3) << endl;
+    			euler = rot2euler(Twc);
+    			//cout << "euler is: " << endl << euler << endl;
+    			//cout << "normal is: " << endl << Tcw << endl;
+    			//cout << "inverse is: " << endl << Twc << endl;
+        	}
             if(!mapInit && !Twc.empty()){ mapInit = true;}
         }
-        sleep(0.5); 
-    }
+        sleep(0.05); 
+    } 
     
-    // position after going forward to find direction vector
-    extra_camera_x = Twc.at<double>(0,3);
-    extra_camera_z = Twc.at<double>(2,3);
+    SLAM.ActivateLocalizationMode();
     
-    // go back so that we have direction vector for current camera orientation
-    tello.SendCommand("back 20");
-    while (!(tello.ReceiveResponse())) { sleep(0.5); }
-    for(int i = 0; i < 100; i++)
-    {
-    	if(!im.empty())
-        {
-    		/*cout << "image not empty" << endl; */
-            Twc = SLAM.TrackMonocular(im,images++);
-        }
-        sleep(0.5); 
-    }
+    cout << "final position*********************************************************************8" << endl;
     //final position
-    last_camera_x = Twc.at<double>(0,3);
-    last_camera_z = Twc.at<double>(2,3);
-
-    // Stop all threads
-    SLAM.Shutdown();
+    last_camera_x = (double)Twc.at<float>(0, 3);
+    last_camera_y = (double)Twc.at<float>(1, 3);
+    last_camera_z = (double)Twc.at<float>(2, 3);
+    
+    direction_camera_x = (double)(sin(euler.at<double>(2) * M_PI/180));
+    direction_camera_y = (double)(sin(euler.at<double>(0) * M_PI/180));
+    direction_camera_z = (double)(cos(euler.at<double>(2) * M_PI/180));
     
     
     // Save camera trajectory and the map
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
-    saveMap(SLAM);
-    
-    thread t3(showCamera);
+    saveMap(SLAM); 
+    cout << "map saved " << endl;
+    cout << "direction_camera_x is " << direction_camera_x << endl;
+    cout << "direction_camera_y is " << direction_camera_y << endl;
+    cout << "direction_camera_z is " << direction_camera_z << endl;
+    cout << "last_camera_x is " << last_camera_x << endl;
+    cout << "last_camera_y is " << last_camera_y << endl;
+    cout << "last_camera_z is " << last_camera_z << endl;
     
     // find the correct angle to the middle of the slice where the door is
-    angle = read_record(extra_camera_x, extra_camera_z, last_camera_x, last_camera_z) * (360.0/NUMBER_OF_SLICES) + 180.0/NUMBER_OF_SLICES;
-    goToDoor((int)(angle + 0.5));
+    find_route(direction_camera_x, direction_camera_z, last_camera_x, last_camera_z, results);
+    cout << "find_route worked " << endl;
+    cout << "angle is " << results[0] << " and the average distance is " << results[1] << endl;
+    thread t3(goToDoor, results, last_camera_x, last_camera_z); // thread for going to the door
+    cout << "another thread " << endl;
+	while(!finished)
+	{
+		if(!im.empty())
+		{
+			tmpTcw = SLAM.TrackMonocular(im, images++);
+			counting++;
+			if(!tmpTcw.empty()) {
+			counting = 0;
+             	Twc = tmpTcw.clone().inv();
+    			//cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(1, 3) << "\nthe other z is " << Twc.at<float>(2, 3) << "\nthe other normal is " << 	Twc.at<float>(3, 3) << endl;
+    			euler = rot2euler(Twc);
+    			//cout << "euler is: " << endl << euler << endl;
+    			//cout << "normal is: " << endl << Tcw << endl;
+    			//cout << "inverse is: " << endl << Twc << endl;
+    			updating = false;
+        	}
+		}
+		sleep(0.1);	
+	}    
+	
+	// stop streaming
+    tello.SendCommand("streamoff");
+    while (!(tello.ReceiveResponse())) { sleep(0.5); }
     
+    // Stop all threads
+    SLAM.Shutdown(); 
     return 0;
-}
-
-void LoadImages(const string &strFile, vector<string> &vstrImageFilenames, vector<double> &vTimestamps)
-{
-    ifstream f;
-    f.open(strFile.c_str());
-
-    // skip first three lines
-    string s0;
-    getline(f,s0);
-    getline(f,s0);
-    getline(f,s0);
-
-    while(!f.eof())
-    {
-        string s;
-        getline(f,s);
-        if(!s.empty())
-        {
-            stringstream ss;
-            ss << s;
-            double t;
-            string sRGB;
-            ss >> t;
-            vTimestamps.push_back(t);
-            ss >> sRGB;
-            vstrImageFilenames.push_back(sRGB);
-        }
-    }
 }
