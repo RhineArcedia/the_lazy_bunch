@@ -43,7 +43,7 @@ using cv::VideoCapture;
 #define MAP_FILE_NAME "map.csv" //Use a path or put the file at the dame directory as the program
 #define NUMBER_OF_SLICES 300 //Determains the number of slices, *do not use a high number*
 #define MIN_POINT_TO_CONSIDER_SLICE 10 //The minimum amount of points in a slice to consider it as viable
-#define SLICE_QUALITY_TEST 0.9 //Slices that are probably good
+#define SLICE_QUALITY_TEST 0.85 //Slices that are probably good
 #define SLICES_LIMIT 7 //Limits the number of good slices
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
@@ -56,6 +56,48 @@ bool moving = false;
 Tello tello{}; 
 cv::Mat im;
 cv::Mat Tcw;
+
+
+// Converts a given Rotation Matrix to Euler angles
+cv::Mat rot2euler(const cv::Mat & rotationMatrix)
+{
+  cv::Mat euler(3,1,CV_64F);
+
+  double m00 = rotationMatrix.at<double>(0,0);
+  double m02 = rotationMatrix.at<double>(0,2);
+  double m10 = rotationMatrix.at<double>(1,0);
+  double m11 = rotationMatrix.at<double>(1,1);
+  double m12 = rotationMatrix.at<double>(1,2);
+  double m20 = rotationMatrix.at<double>(2,0);
+  double m22 = rotationMatrix.at<double>(2,2);
+
+  double x, y, z;
+
+  // Assuming the angles are in radians.
+  if (m10 > 0.998) { // singularity at north pole
+    x = 0;
+    y = CV_PI/2;
+    z = atan2(m02,m22);
+  }
+  else if (m10 < -0.998) { // singularity at south pole
+    x = 0;
+    y = -CV_PI/2;
+    z = atan2(m02,m22);
+  }
+  else
+  {
+    x = atan2(-m12,m11);
+    y = asin(m10);
+    z = atan2(-m20,m00);
+  }
+
+  euler.at<double>(0) = x;
+  euler.at<double>(1) = y;
+  euler.at<double>(2) = z;
+
+  return euler;
+}
+
 
 //Written by Erel Afoota for locating a path exiting a room as a group project
 //Group members: David Doner, Elad Hirshel, Erel Afoota
@@ -107,8 +149,8 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         //cout << " calculating point " << endl;
         x = stod(word);
         getline(s, word, ',');
-        y = stod(word); 
         getline(s, word, ',');
+        y = stod(word); 
         //cout << "x is " << x << " and y is " << y << endl;
         x = x - originX;
         y = y - originY;
@@ -171,28 +213,36 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
     higherSlice = (int)pointer[0];
     lowerSlice = (int)pointer[0];
     bool over = false, below = false;
-    while(numberOfPoints[higherSlice + 1] > 0 && (sliceSumOfDistances[higherSlice + 1] / numberOfPoints[higherSlice + 1]) >= SLICE_QUALITY_TEST * pointer[1])
+    int counter = 0;
+    while(counter < SLICES_LIMIT && numberOfPoints[higherSlice + 1] > MIN_POINT_TO_CONSIDER_SLICE && (sliceSumOfDistances[higherSlice + 1] / numberOfPoints[higherSlice + 1]) >= SLICE_QUALITY_TEST * pointer[1])
     {
     	higherSlice++;
-    	if (higherSlice >= NUMBER_OF_SLICES)
+    	counter++;
+    	if (higherSlice >= NUMBER_OF_SLICES){
     		higherSlice = 0;
     		over = true;
+    	}
     }
     
     //Now lowest slice
-    while(numberOfPoints[lowerSlice - 1] > 0 && (sliceSumOfDistances[lowerSlice - 1] / numberOfPoints[lowerSlice - 1]) >= SLICE_QUALITY_TEST * pointer[1])
+    counter = 0;
+    while(counter < SLICES_LIMIT && numberOfPoints[lowerSlice - 1] > MIN_POINT_TO_CONSIDER_SLICE && (sliceSumOfDistances[lowerSlice - 1] / numberOfPoints[lowerSlice - 1]) >= SLICE_QUALITY_TEST * pointer[1])
     {
     	lowerSlice--;
-    	if (lowerSlice < 0)
+    	counter++;
+    	if (lowerSlice < 0){
     		lowerSlice = NUMBER_OF_SLICES - 1;
     		below = true;
+    	}
     }
     
+    cout << "higher slice is " << higherSlice << "\nlower slice is " << lowerSlice << endl;
     if(over) { higherSlice = higherSlice + NUMBER_OF_SLICES; }
-    if(below) { lowerSlice = NUMBER_OF_SLICES - lowerSlice; }
+    if(below) { lowerSlice = lowerSlice - NUMBER_OF_SLICES; }
+    cout << "higher slice is " << higherSlice << "\nlower slice is " << lowerSlice << endl;
     
     //Now update to desired slice
-    pointer[0] = (int)((higherSlice - lowerSlice)/2) + lowerSlice;
+    pointer[0] = (int)((higherSlice + lowerSlice)/2);
     if(pointer[0] < 0) { pointer[0] = NUMBER_OF_SLICES + pointer[0]; }
     if(pointer[0] >= NUMBER_OF_SLICES) { pointer[0] = pointer[0] - NUMBER_OF_SLICES; }
     pointer[1] = (sliceSumOfDistances[(int)pointer[0]] / numberOfPoints[(int)pointer[0]]);
@@ -214,8 +264,8 @@ void find_route(double baseX, double baseY, double originX, double originY, doub
         if(word.empty()) break;
         x = stod(word);
         getline(s, word, ',');
-        y = stod(word); 
         getline(s, word, ',');
+        y = stod(word); 
         x = x - originX;
         y = y - originY;
         v1.push_back(x);
@@ -319,6 +369,7 @@ void takeImage() // constantly saves the image from the camera
 
 void runDrone() // thread runing the drone
 {
+	/*
     tello.SendCommand("takeoff");
     while (!(tello.ReceiveResponse())) { sleep(0.5); }
     while(!mapInit)
@@ -331,21 +382,21 @@ void runDrone() // thread runing the drone
     	tello.SendCommand("down 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.5); } 
     }
-    for(int i = 0; i < 16; i++)
+    for(int i = 0; i < 12; i++)
     {
     	cout << "Rotating " << i << endl;
-    	tello.SendCommand("cw 25");
+    	tello.SendCommand("cw 30");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
-    	sleep(0.5);
-    	tello.SendCommand("up 20");
+    	sleep(1);
+    	tello.SendCommand("forward 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
-    	tello.SendCommand("down 20");
+    	tello.SendCommand("back 30");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
     	cout << "finish rotating" << endl;
-    } 
-    //sleep(150);
+    } */
+    sleep(120);
     rotating = false;
 }
 
@@ -354,7 +405,7 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
 {	
 	Vars[2] = Vars[2] - originX;
 	Vars[3] = Vars[3] - originY;
-	double x = Tcw.at<double>(0,3) - originX, y = Tcw.at<double>(1,3) - originY;
+	double x = Tcw.at<double>(0,3) - originX, y = Tcw.at<double>(2,3) - originY;
 	double medianNorm = sqrt(pow(Vars[2], 2) + pow(Vars[3], 2));
 	double directionNorm = sqrt(pow(x, 2) + pow(y, 2));
 	double vectorMultiplication = 0.0, crossProduct = 0.0;
@@ -367,7 +418,7 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
     sleep(1);
     
-    while(medianNorm > directionNorm)
+    /*while(medianNorm > directionNorm)
     {
     	tello.SendCommand("forward 40");
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
@@ -393,8 +444,11 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
     	tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
     	sleep(0.5);
-    }
+    } */
     
+    tello.SendCommand("forward 200");
+    while(!(tello.ReceiveResponse())) { sleep(0.2); }
+    sleep(1);
     tello.SendCommand("land");
     while (!(tello.ReceiveResponse())) { sleep(0.2); }
     finished = true;
@@ -403,6 +457,8 @@ void goToDoor(double* Vars, double originX, double originY) // rotate to face do
 int main(int argc, char **argv)
 {
 	cv::Mat tmpTcw;
+	cv::Mat euler(3,1,CV_64F);
+	cv::Mat Rcw(3,3,CV_64F);
 	double last_camera_x = 0.0, last_camera_y = 0.0, last_camera_z = 0.0;
 	double direction_vector_x = 0.0, direction_vector_y = 0.0, direction_vector_z = 0.0;
 	double yaw, pitch, roll;
@@ -450,7 +506,16 @@ int main(int argc, char **argv)
             if(!tmpTcw.empty()) 
             {
             	Tcw = tmpTcw;
-    			//cout << "the x is " << Tcw.at<double>(0) << "\nthe y is " << Tcw.at<double>(1) << "\nthe z is " << Tcw.at<double>(2) << "\nthe normal is " << Tcw.at<double>(3) << endl;
+            	//yaw = atan2(Tcw.at<double>(0,1), Tcw.at<double>(0,0)) * 180/M_PI;
+    			//pitch = atan2(-Tcw.at<double>(0,2), (sqrt(pow(Tcw.at<double>(1,2), 2)+pow(Tcw.at<double>(2,2), 2)))) * 180/M_PI;
+    			//roll = atan2(Tcw.at<double>(1,2), Tcw.at<double>(2,2)) * 180/M_PI;
+    			Rcw = Tcw.rowRange(0,3).colRange(0,3);
+    			euler = rot2euler(Rcw);
+    			roll = euler.at<double>(0) * 180/M_PI;
+    			pitch = euler.at<double>(1) * 180/M_PI;
+    			yaw = euler.at<double>(2) * 180/M_PI;
+    			cout << "yaw is " << yaw << "\npitch is " << pitch << "\nroll is " << roll << endl;
+    			//cout << "x direction is " << cos(yaw)*cos(pitch) << "\ny direction is " << sin(yaw)*cos(pitch) << "\nz direction is " << sin(pitch) << "\n the normal is " << sqrt(pow(cos(yaw)*cos(pitch), 2.0) + pow(sin(yaw)*cos(pitch), 2.0)) << endl;
         	}
             if(!mapInit && !Tcw.empty()){ mapInit = true;}
         }
@@ -463,13 +528,10 @@ int main(int argc, char **argv)
     last_camera_x = Tcw.at<double>(0, 3);
     last_camera_y = Tcw.at<double>(1, 3);
     last_camera_z = Tcw.at<double>(2, 3);
-    yaw = atan(Tcw.at<double>(1,0)/Tcw.at<double>(0,0));
-    pitch = atan(-Tcw.at<double>(2,0)/(sqrt(pow(Tcw.at<double>(2,1), 2)+pow(Tcw.at<double>(2,2), 2))));
-    //roll = atan(Tcw.at<double>(2,1)/Tcw.at<double>(2,2));
     
-    direction_vector_x = cos(yaw)*cos(pitch);
-    direction_vector_y = sin(yaw)*cos(pitch);
-    direction_vector_z = sin(pitch);
+    direction_vector_x = sin(yaw);
+    direction_vector_y = sin(pitch);
+    direction_vector_z = cos(yaw);
     
     // Save camera trajectory and the map
     SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
@@ -484,10 +546,10 @@ int main(int argc, char **argv)
     
     SLAM.ActivateLocalizationMode();
     // find the correct angle to the middle of the slice where the door is
-    find_route(direction_vector_x, direction_vector_y, last_camera_x, last_camera_y, results);
+    find_route(direction_vector_x, direction_vector_z, last_camera_x, last_camera_z, results);
     cout << "find_route worked " << endl;
     cout << "angle is " << results[0] << " and the average distance is " << results[1] << endl;
-    thread t3(goToDoor, results, last_camera_x, last_camera_y); // thread for going to the door
+    thread t3(goToDoor, results, last_camera_x, last_camera_z); // thread for going to the door
     cout << "another thread " << endl;
     
 	while(!finished)
@@ -512,3 +574,4 @@ int main(int argc, char **argv)
     SLAM.Shutdown();
     return 0;
 }
+
