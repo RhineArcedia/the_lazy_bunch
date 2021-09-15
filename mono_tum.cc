@@ -43,8 +43,8 @@ using cv::VideoCapture;
 #define MAP_FILE_NAME "map.csv" //Use a path or put the file at the dame directory as the program
 #define NUMBER_OF_SLICES 300 //Determains the number of slices, *do not use a high number*
 #define MIN_POINT_TO_CONSIDER_SLICE 10 //The minimum amount of points in a slice to consider it as viable
-#define SLICE_QUALITY_TEST 0.7 //Slices that are probably good
-#define SLICES_LIMIT 7 //Limits the number of good slices
+#define SLICE_QUALITY_TEST 0.55 //Slices that are probably good
+#define SLICES_LIMIT 20 //Limits the number of good slices
 #define MAX_TIME 200 // max time to wait for location from orb slam
 
 const char* const TELLO_STREAM_URL{"udp://0.0.0.0:11111"};
@@ -52,6 +52,7 @@ bool mapInit = false;
 bool rotating = true;
 bool updating = false;
 bool finished = false;
+int counting = 0;
 //VideoCapture capture(0);
 Tello tello{}; 
 cv::Mat im;
@@ -394,10 +395,10 @@ void runDrone() // thread runing the drone
     	tello.SendCommand("cw 20");
     	while (!(tello.ReceiveResponse())) {sleep(0.1); }
     	sleep(1);
-    	tello.SendCommand("up 20");
+    	tello.SendCommand("forward 20");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
-    	tello.SendCommand("down 30");
+    	tello.SendCommand("back 25");
     	while (!(tello.ReceiveResponse())) { sleep(0.1); }
     	sleep(0.5); 
     	cout << "finished rotating" << endl;
@@ -427,13 +428,12 @@ void goToDoor(double* Vars, double originX, double originZ) // rotate to face do
     
     while(Vars[1] > Norm && counter < MAX_TIME)
     {
-    	tello.SendCommand("forward 100");
+    	tello.SendCommand("forward 50");
     	while(!(tello.ReceiveResponse())) { sleep(0.2); }
     	sleep(0.5);
     	updating = true;
-    	counter = 0;
-    	while(updating && counter++ < MAX_TIME) { sleep(0.01); }
-    	if(counter < MAX_TIME) 
+    	while(updating && counting < MAX_TIME) { sleep(0.01); }
+    	if(counting < MAX_TIME) 
     	{ 
 			x = (double)Twc.at<float>(0,3);
 			z = (double)Twc.at<float>(2,3);
@@ -450,15 +450,26 @@ void goToDoor(double* Vars, double originX, double originZ) // rotate to face do
 			else 
 			{
 				angle = acos(vectorMultiplication / (medianNorm * baseNorm)) * 180/M_PI;
-				if(crossProduct > 0) { angle = 360 - angle; }
 			}
-				
-			tello.SendCommand("ccw 20");
-			while(!(tello.ReceiveResponse())) { sleep(0.2); }
-			sleep(0.5);
-			tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
-			while(!(tello.ReceiveResponse())) { sleep(0.2); }
-			sleep(0.5);
+			
+			if(crossProduct < 0)
+			{
+				tello.SendCommand("ccw 20");
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+				tello.SendCommand("cw " + to_string((int)(angle + 20.5)));
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+			}
+			else
+			{
+				tello.SendCommand("cw 20");
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+				tello.SendCommand("ccw " + to_string((int)(angle + 20.5)));
+				while(!(tello.ReceiveResponse())) { sleep(0.2); }
+				sleep(0.5);
+			}
 		}
     } 
     
@@ -563,7 +574,9 @@ int main(int argc, char **argv)
 		if(!im.empty())
 		{
 			tmpTcw = SLAM.TrackMonocular(im, images++);
+			counting++;
 			if(!tmpTcw.empty()) {
+			counting = 0;
              	Twc = tmpTcw.clone().inv();
     			//cout << "the other x is " << Twc.at<float>(0, 3) << "\nthe other y is " << Twc.at<float>(1, 3) << "\nthe other z is " << Twc.at<float>(2, 3) << "\nthe other normal is " << 	Twc.at<float>(3, 3) << endl;
     			euler = rot2euler(Twc);
